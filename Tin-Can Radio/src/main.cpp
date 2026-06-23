@@ -33,6 +33,14 @@
 #define SWEEP_DWELL_MS 1600
 #endif
 
+#ifndef TUNE_STEP_MHZ
+#define TUNE_STEP_MHZ 0.1
+#endif
+
+#ifndef ENCODER_REVERSE
+#define ENCODER_REVERSE 0
+#endif
+
 #if BRINGUP_STAGE >= 3
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -47,6 +55,10 @@ constexpr int8_t OLED_RESET_PIN = -1;
 
 constexpr uint8_t RDA5807M_WRITE_ADDR = 0x10;
 constexpr uint8_t RDA5807M_READ_ADDR = 0x11;
+
+constexpr uint8_t ENCODER_A_PIN = 2;  // XIAO ESP32C3 D0
+constexpr uint8_t ENCODER_B_PIN = 3;  // XIAO ESP32C3 D1
+constexpr uint8_t ENCODER_SW_PIN = 4; // XIAO ESP32C3 D2
 
 #if BRINGUP_STAGE >= 3
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET_PIN);
@@ -262,13 +274,13 @@ void printRdaStatus() {
   Serial.println(status.rssi);
 }
 
-void updateFixedStationDisplay() {
+void updateStationDisplay(float frequencyMhz) {
   const RdaStatus status = readRdaStatus();
 
   char line1[22];
   char line2[22];
   char line3[22];
-  snprintf(line1, sizeof(line1), "FM %.1f MHz", static_cast<double>(TEST_FREQ_MHZ));
+  snprintf(line1, sizeof(line1), "FM %.1f MHz", static_cast<double>(frequencyMhz));
 
   if (status.available) {
     snprintf(line2, sizeof(line2), "RSSI %u %s", status.rssi, status.tuned ? "TUNE" : "SEARCH");
@@ -285,7 +297,7 @@ void updateFixedStationDisplay() {
 
   if (status.available) {
     Serial.print("FM ");
-    Serial.print(TEST_FREQ_MHZ, 1);
+    Serial.print(frequencyMhz, 1);
     Serial.print(" MHz tuned=");
     Serial.print(status.tuned ? "yes" : "no");
     Serial.print(" stereo=");
@@ -295,6 +307,10 @@ void updateFixedStationDisplay() {
   } else {
     Serial.println("RDA5807M status read unavailable");
   }
+}
+
+void updateFixedStationDisplay() {
+  updateStationDisplay(TEST_FREQ_MHZ);
 }
 
 void setupRadio() {
@@ -366,6 +382,120 @@ void sweepNextFrequency() {
   delay(SWEEP_DWELL_MS);
 }
 #endif
+
+#if BRINGUP_STAGE >= 6
+float currentFrequencyMhz = TEST_FREQ_MHZ;
+uint8_t encoderLastState = 0;
+int8_t encoderAccumulator = 0;
+bool buttonStableState = HIGH;
+bool buttonLastReading = HIGH;
+uint32_t buttonLastChangeMs = 0;
+uint32_t lastStatusRefreshMs = 0;
+
+uint8_t readEncoderState() {
+  const uint8_t a = digitalRead(ENCODER_A_PIN) == HIGH ? 1 : 0;
+  const uint8_t b = digitalRead(ENCODER_B_PIN) == HIGH ? 1 : 0;
+  return static_cast<uint8_t>((a << 1) | b);
+}
+
+void setupControls() {
+  pinMode(ENCODER_A_PIN, INPUT_PULLUP);
+  pinMode(ENCODER_B_PIN, INPUT_PULLUP);
+  pinMode(ENCODER_SW_PIN, INPUT_PULLUP);
+  delay(5);
+
+  encoderLastState = readEncoderState();
+  buttonStableState = digitalRead(ENCODER_SW_PIN);
+  buttonLastReading = buttonStableState;
+
+  Serial.println("Encoder controls ready");
+  Serial.println("Rotate: tune 0.1 MHz, press: return to startup station");
+}
+
+void clampCurrentFrequency() {
+  if (currentFrequencyMhz < 87.0f) {
+    currentFrequencyMhz = 87.0f;
+  }
+  if (currentFrequencyMhz > 108.0f) {
+    currentFrequencyMhz = 108.0f;
+  }
+}
+
+void tuneCurrentFrequency() {
+  clampCurrentFrequency();
+  const bool ok = tuneRda5807m(currentFrequencyMhz);
+  delay(120);
+
+  Serial.print("Encoder tune ");
+  Serial.print(currentFrequencyMhz, 1);
+  Serial.print(" MHz ");
+  Serial.println(ok ? "OK" : "FAILED");
+
+  updateStationDisplay(currentFrequencyMhz);
+  lastStatusRefreshMs = millis();
+}
+
+void handleEncoderRotation() {
+  static const int8_t transitionTable[16] = {
+    0, -1, 1, 0,
+    1, 0, 0, -1,
+    -1, 0, 0, 1,
+    0, 1, -1, 0,
+  };
+
+  const uint8_t state = readEncoderState();
+  if (state == encoderLastState) {
+    return;
+  }
+
+  const uint8_t transition = static_cast<uint8_t>((encoderLastState << 2) | state);
+  encoderLastState = state;
+  encoderAccumulator += transitionTable[transition & 0x0F];
+
+  if (encoderAccumulator >= 4 || encoderAccumulator <= -4) {
+    int8_t direction = encoderAccumulator > 0 ? 1 : -1;
+#if ENCODER_REVERSE
+    direction = -direction;
+#endif
+    encoderAccumulator = 0;
+
+    currentFrequencyMhz += direction * TUNE_STEP_MHZ;
+    tuneCurrentFrequency();
+  }
+}
+
+void handleEncoderButton() {
+  const bool reading = digitalRead(ENCODER_SW_PIN);
+  const uint32_t now = millis();
+
+  if (reading != buttonLastReading) {
+    buttonLastChangeMs = now;
+    buttonLastReading = reading;
+  }
+
+  if (now - buttonLastChangeMs < 35) {
+    return;
+  }
+
+  if (reading != buttonStableState) {
+    buttonStableState = reading;
+    if (buttonStableState == LOW) {
+      currentFrequencyMhz = TEST_FREQ_MHZ;
+      tuneCurrentFrequency();
+    }
+  }
+}
+
+void updateInteractiveRadio() {
+  handleEncoderRotation();
+  handleEncoderButton();
+
+  if (millis() - lastStatusRefreshMs >= 1000) {
+    updateStationDisplay(currentFrequencyMhz);
+    lastStatusRefreshMs = millis();
+  }
+}
+#endif
 #endif
 
 void setup() {
@@ -385,6 +515,12 @@ void setup() {
 #if BRINGUP_STAGE >= 4
   setupRadio();
 #endif
+
+#if BRINGUP_STAGE >= 6
+  setupControls();
+  currentFrequencyMhz = TEST_FREQ_MHZ;
+  updateStationDisplay(currentFrequencyMhz);
+#endif
 }
 
 void loop() {
@@ -400,7 +536,10 @@ void loop() {
 #elif BRINGUP_STAGE == 4
   updateFixedStationDisplay();
   delay(3000);
-#elif BRINGUP_STAGE >= 5
+#elif BRINGUP_STAGE == 5
   sweepNextFrequency();
+#elif BRINGUP_STAGE >= 6
+  updateInteractiveRadio();
+  delay(2);
 #endif
 }
