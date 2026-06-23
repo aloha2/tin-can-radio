@@ -37,6 +37,22 @@
 #define TUNE_STEP_MHZ 0.1
 #endif
 
+#ifndef TUNE_FAST_STEP_MHZ
+#define TUNE_FAST_STEP_MHZ 0.5
+#endif
+
+#ifndef TUNE_VERY_FAST_STEP_MHZ
+#define TUNE_VERY_FAST_STEP_MHZ 1.0
+#endif
+
+#ifndef TUNE_FAST_THRESHOLD_MS
+#define TUNE_FAST_THRESHOLD_MS 180
+#endif
+
+#ifndef TUNE_VERY_FAST_THRESHOLD_MS
+#define TUNE_VERY_FAST_THRESHOLD_MS 80
+#endif
+
 #ifndef ENCODER_REVERSE
 #define ENCODER_REVERSE 0
 #endif
@@ -391,6 +407,7 @@ bool buttonStableState = HIGH;
 bool buttonLastReading = HIGH;
 uint32_t buttonLastChangeMs = 0;
 uint32_t lastStatusRefreshMs = 0;
+uint32_t lastEncoderStepMs = 0;
 
 uint8_t readEncoderState() {
   const uint8_t a = digitalRead(ENCODER_A_PIN) == HIGH ? 1 : 0;
@@ -409,7 +426,7 @@ void setupControls() {
   buttonLastReading = buttonStableState;
 
   Serial.println("Encoder controls ready");
-  Serial.println("Rotate: tune 0.1 MHz, press: return to startup station");
+  Serial.println("Rotate: tune with acceleration, press: return to startup station");
 }
 
 void clampCurrentFrequency() {
@@ -433,6 +450,20 @@ void tuneCurrentFrequency() {
 
   updateStationDisplay(currentFrequencyMhz);
   lastStatusRefreshMs = millis();
+}
+
+float acceleratedTuneStep(uint32_t elapsedMs) {
+  if (lastEncoderStepMs == 0) {
+    return TUNE_STEP_MHZ;
+  }
+
+  if (elapsedMs <= TUNE_VERY_FAST_THRESHOLD_MS) {
+    return TUNE_VERY_FAST_STEP_MHZ;
+  }
+  if (elapsedMs <= TUNE_FAST_THRESHOLD_MS) {
+    return TUNE_FAST_STEP_MHZ;
+  }
+  return TUNE_STEP_MHZ;
 }
 
 void handleEncoderRotation() {
@@ -459,7 +490,15 @@ void handleEncoderRotation() {
 #endif
     encoderAccumulator = 0;
 
-    currentFrequencyMhz += direction * TUNE_STEP_MHZ;
+    const uint32_t now = millis();
+    const uint32_t elapsedMs = lastEncoderStepMs == 0 ? 0 : now - lastEncoderStepMs;
+    const float stepMhz = acceleratedTuneStep(elapsedMs);
+    lastEncoderStepMs = now;
+
+    currentFrequencyMhz += direction * stepMhz;
+    Serial.print("Encoder step ");
+    Serial.print(stepMhz, 1);
+    Serial.println(" MHz");
     tuneCurrentFrequency();
   }
 }
