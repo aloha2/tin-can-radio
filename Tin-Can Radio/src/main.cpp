@@ -262,6 +262,41 @@ void printRdaStatus() {
   Serial.println(status.rssi);
 }
 
+void updateFixedStationDisplay() {
+  const RdaStatus status = readRdaStatus();
+
+  char line1[22];
+  char line2[22];
+  char line3[22];
+  snprintf(line1, sizeof(line1), "FM %.1f MHz", static_cast<double>(TEST_FREQ_MHZ));
+
+  if (status.available) {
+    snprintf(line2, sizeof(line2), "RSSI %u %s", status.rssi, status.tuned ? "TUNE" : "SEARCH");
+    snprintf(line3, sizeof(line3), "%s Vol %u", status.stereo ? "Stereo" : "Mono", clampRdaVolume());
+  } else {
+    snprintf(line2, sizeof(line2), "RDA status lost");
+    snprintf(line3, sizeof(line3), "Check I2C");
+  }
+
+  showStatus("Tin-Can Radio", line1, line2);
+  display.setCursor(0, 24);
+  display.println(line3);
+  display.display();
+
+  if (status.available) {
+    Serial.print("FM ");
+    Serial.print(TEST_FREQ_MHZ, 1);
+    Serial.print(" MHz tuned=");
+    Serial.print(status.tuned ? "yes" : "no");
+    Serial.print(" stereo=");
+    Serial.print(status.stereo ? "yes" : "no");
+    Serial.print(" rssi=");
+    Serial.println(status.rssi);
+  } else {
+    Serial.println("RDA5807M status read unavailable");
+  }
+}
+
 void setupRadio() {
   Serial.println("Initializing RDA5807M...");
   showStatus("Tin-Can Radio", "Init RDA5807M");
@@ -363,7 +398,7 @@ void loop() {
   Serial.println("OLED test alive");
   delay(3000);
 #elif BRINGUP_STAGE == 4
-  printRdaStatus();
+  updateFixedStationDisplay();
   delay(3000);
 #elif BRINGUP_STAGE >= 5
   sweepNextFrequency();
