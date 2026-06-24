@@ -1,5 +1,7 @@
 # Tin-Can Radio V0 — Receiver First Wiring / Bring-up Plan
 
+> Status note, 2026-06-24: this bring-up has now succeeded on the bench. The verified milestone is documented in `docs/milestone-v0-electronics-bringup.md`, and the next mechanical handoff is in `docs/hermes-handoff-v0-mechanical.md`.
+
 This is the next practical step after the purchased-material inspection: build a table-top receiver test rig **outside the can first**, then move it into the can after the electronics are proven.
 
 ## Goal for this step
